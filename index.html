@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitoramento CA - Tempo Real</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
+        .container { max-width: 1100px; margin: 0 auto; }
+        header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; border-bottom: 1px solid #334155; padding-bottom: 15px; margin-bottom: 25px; }
+        h1 { margin: 0; font-size: 1.5rem; color: #38bdf8; }
+        .status-bar { display: flex; align-items: center; gap: 10px; font-size: 0.9rem; color: #94a3b8; margin-top: 5px; }
+        .dot { height: 10px; width: 10px; background: #fbbf24; border-radius: 50%; display: inline-block; }
+        .btn-nav { background: #334155; color: #f8fafc; text-decoration: none; padding: 10px 18px; border-radius: 6px; font-weight: bold; }
+        .btn-nav:hover { background: #475569; }
+        .grid-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-bottom: 25px; }
+        .card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
+        .card-title { font-size: 0.85rem; text-transform: uppercase; color: #94a3b8; margin-bottom: 10px; }
+        .card-value { font-size: 2.8rem; font-weight: bold; margin: 5px 0; }
+        .min-max { display: flex; justify-content: space-between; margin-top: 15px; padding-top: 10px; border-top: 1px solid #334155; font-size: 0.9rem; }
+        .grid-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; }
+        .chart-container { position: relative; height: 240px; width: 100%; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div>
+            <h1>⚡ Monitor de Qualidade de Energia (SOGI-PLL)</h1>
+            <div class="status-bar"><span class="dot" id="status-dot"></span><span id="status-texto">Iniciando...</span></div>
+        </div>
+        <a href="baixar_csv.html" class="btn-nav">📊 Histórico / CSV</a>
+    </header>
+    <div class="grid-cards">
+        <div class="card">
+            <div class="card-title">Tensão RMS (Média 1 min)</div>
+            <div class="card-value" style="color: #38bdf8;"><span id="vrms-med">--.--</span> V</div>
+            <div class="min-max"><span style="color:#38bdf8">⬇ Mín: <strong id="vrms-min">--.--</strong> V</span><span style="color:#fbbf24">⬆ Máx: <strong id="vrms-max">--.--</strong> V</span></div>
+        </div>
+        <div class="card">
+            <div class="card-title">Frequência (Média 1 min)</div>
+            <div class="card-value" style="color: #4ade80;"><span id="freq-med">--.--</span> Hz</div>
+            <div class="min-max"><span style="color:#38bdf8">⬇ Mín: <strong id="freq-min">--.--</strong> Hz</span><span style="color:#fbbf24">⬆ Máx: <strong id="freq-max">--.--</strong> Hz</span></div>
+        </div>
+        <div class="card">
+            <div class="card-title">Integridade</div>
+            <div class="card-value"><span id="amostras">--</span> pts</div>
+            <div class="min-max"><span>Perdidas: <strong id="perdidas" style="color:#4ade80">0</strong></span><span>Janela: <strong id="hora-janela">--:--:--</strong></span></div>
+        </div>
+    </div>
+    <div class="grid-charts">
+        <div class="card"><div class="card-title">Tensão RMS (V)</div><div class="chart-container" id="svg-tensao"></div></div>
+        <div class="card"><div class="card-title">Frequência (Hz)</div><div class="chart-container" id="svg-freq"></div></div>
+    </div>
+</div>
+
+<script>
+    // =========================================================================
+    // COLE AQUI A URL DO SEU BANCO (ex: "https://firebaseio.com")
+    // =========================================================================
+    const URL_DO_PROJETO = "https://medidor-esp32-6826e-default-rtdb.firebaseio.com/";
+    // =========================================================================
+
+    const BASE_LIMPA = URL_DO_PROJETO.replace(/\/+$/, "").replace(/\/(leituras|historico)\.json$/, "");
+    const URL_LEITURAS  = BASE_LIMPA + "/leituras.json";
+    const URL_HISTORICO = BASE_LIMPA + "/historico.json";
+
+    let ultimaData = "";
+    let serieTensao = [];
+    let serieFreq = [];
+
+    function desenharGraficoSVG(idContainer, dados, cor, unidade) {
+        const box = document.getElementById(idContainer);
+        if (!box) return;
+
+        if (dados.length === 0) {
+            box.innerHTML = '<div style="color:#94a3b8;text-align:center;padding-top:100px;">Aguardando pontos...</div>';
+            return;
+        }
+
+        const w = 500, h = 220, pad = 42;
+        const valores = dados.map(d => d.valor);
+        let min = Math.min(...valores);
+        let max = Math.max(...valores);
+
+        if (max - min < 0.05) {
+            min -= 0.5;
+            max += 0.5;
+        } else {
+            const margem = (max - min) * 0.15;
+            min -= margem;
+            max += margem;
+        }
+
+        const getX = (i) => pad + (dados.length === 1 ? (w - 2 * pad) / 2 : (i / (dados.length - 1)) * (w - 2 * pad));
+        const getY = (v) => (h - pad) - ((v - min) / (max - min)) * (h - 2 * pad);
+
+        let pontosLinha = "";
+        let circulos = "";
+
+        dados.forEach((d, i) => {
+            const x = getX(i).toFixed(1);
+            const y = getY(d.valor).toFixed(1);
+            pontosLinha += x + "," + y + " ";
+            circulos += '<circle cx="' + x + '" cy="' + y + '" r="3.5" fill="' + cor + '"><title>' + d.hora + ': ' + d.valor.toFixed(2) + ' ' + unidade + '</title></circle>';
+        });
+
+        const primeiroHora = dados.at(0).hora;
+        const ultimaHora = dados.at(-1).hora;
+
+        box.innerHTML =
+            '<svg viewBox="0 0 ' + w + ' ' + h + '" style="width:100%;height:100%;overflow:visible;">' +
+                '<line x1="' + pad + '" y1="' + pad + '" x2="' + (w - pad) + '" y2="' + pad + '" stroke="#334155" stroke-dasharray="4"/>' +
+                '<line x1="' + pad + '" y1="' + (h / 2) + '" x2="' + (w - pad) + '" y2="' + (h / 2) + '" stroke="#334155" stroke-dasharray="4"/>' +
+                '<line x1="' + pad + '" y1="' + (h - pad) + '" x2="' + (w - pad) + '" y2="' + (h - pad) + '" stroke="#334155"/>' +
+                '<text x="' + (pad - 6) + '" y="' + (pad + 4) + '" fill="#94a3b8" font-size="11" text-anchor="end">' + max.toFixed(2) + '</text>' +
+                '<text x="' + (pad - 6) + '" y="' + (h - pad) + '" fill="#94a3b8" font-size="11" text-anchor="end">' + min.toFixed(2) + '</text>' +
+                '<text x="' + pad + '" y="' + (h - 15) + '" fill="#94a3b8" font-size="11" text-anchor="start">' + primeiroHora + '</text>' +
+                '<text x="' + (w - pad) + '" y="' + (h - 15) + '" fill="#94a3b8" font-size="11" text-anchor="end">' + ultimaHora + '</text>' +
+                '<polyline fill="none" stroke="' + cor + '" stroke-width="2.5" points="' + pontosLinha.trim() + '"/>' +
+                circulos +
+            '</svg>';
+    }
+
+    function adicionarNaSerie(serie, hora, valor) {
+        if (isNaN(valor) || valor <= 0) return;
+        serie.push({ hora: hora, valor: valor });
+        if (serie.length > 30) serie.shift();
+    }
+
+    async function carregarHistorico() {
+        try {
+            const res = await fetch(URL_HISTORICO);
+            if (!res.ok) return;
+            const json = await res.json();
+            if (!json) return;
+
+            const lista = Object.values(json)
+                .filter(item => item && item.vrms_med !== undefined && item.freq_med !== undefined)
+                .sort((a, b) => (a.data_hora || "").localeCompare(b.data_hora || ""));
+
+            lista.slice(-30).forEach(item => {
+                const partes = item.data_hora ? item.data_hora.split(' ') : [];
+                const hora = partes.length > 1 ? partes.at(1).slice(0, 5) : "--:--";
+                adicionarNaSerie(serieTensao, hora, Number(item.vrms_med));
+                adicionarNaSerie(serieFreq, hora, Number(item.freq_med));
+                ultimaData = item.data_hora;
+            });
+
+            desenharGraficoSVG('svg-tensao', serieTensao, '#38bdf8', 'V');
+            desenharGraficoSVG('svg-freq', serieFreq, '#4ade80', 'Hz');
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    async function atualizar() {
+        const dot = document.getElementById('status-dot');
+        const txt = document.getElementById('status-texto');
+        try {
+            const res = await fetch(URL_LEITURAS);
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            const d = await res.json();
+            if (!d) return;
+
+            document.getElementById('vrms-med').innerText = Number(d.vrms_med).toFixed(2);
+            document.getElementById('vrms-min').innerText = Number(d.vrms_min).toFixed(2);
+            document.getElementById('vrms-max').innerText = Number(d.vrms_max).toFixed(2);
+            document.getElementById('freq-med').innerText = Number(d.freq_med).toFixed(2);
+            document.getElementById('freq-min').innerText = Number(d.freq_min).toFixed(2);
+            document.getElementById('freq-max').innerText = Number(d.freq_max).toFixed(2);
+            document.getElementById('amostras').innerText = d.amostras;
+            document.getElementById('perdidas').innerText = d.perdidas;
+
+            const partes = d.data_hora ? d.data_hora.split(' ') : [];
+            const horaCompleta = partes.length > 1 ? partes.at(1) : (d.data_hora || '--:--:--');
+            document.getElementById('hora-janela').innerText = horaCompleta;
+
+            if (d.data_hora && d.data_hora !== ultimaData) {
+                ultimaData = d.data_hora;
+                const horaCurta = horaCompleta.slice(0, 5);
+                adicionarNaSerie(serieTensao, horaCurta, Number(d.vrms_med));
+                adicionarNaSerie(serieFreq, horaCurta, Number(d.freq_med));
+                desenharGraficoSVG('svg-tensao', serieTensao, '#38bdf8', 'V');
+                desenharGraficoSVG('svg-freq', serieFreq, '#4ade80', 'Hz');
+            }
+            dot.style.background = '#4ade80';
+            txt.innerText = "Online • Janela: " + d.data_hora;
+        } catch (e) {
+            dot.style.background = '#f87171';
+            txt.innerText = "Erro: " + e.message;
+        }
+    }
+
+    carregarHistorico().then(() => {
+        atualizar();
+        setInterval(atualizar, 5000);
+    });
+</script>
+</body>
+</html>

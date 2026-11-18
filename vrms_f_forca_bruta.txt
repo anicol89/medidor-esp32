@@ -1,0 +1,41 @@
+static uint32_t kk = 0, N=0, Nc=0, n_per=0, kk_sum=0;
+  static float vm=0, offset=0, f=0;
+
+  vo = v;
+  v = v - offset;
+  
+  if(((v_ant<=0 && v>0)||(v_ant>=0 && v<0)) && n_per<12 && kk>5){
+    n_per = n_per+1;
+    kk_sum=kk_sum+kk;
+    kk = 0;}
+    
+  else if(((v_ant<=0 && v>0)||(v_ant>=0 && v<0)) && n_per>=12 && kk>5){
+    vrms = sqrt(vrms/N);
+    f = n_per*0.5*FS/kk_sum;
+    printLL2 = vrms*66.67;
+    vrms = 0;
+    N = 0;
+    n_per = 0;
+    kk = 0;
+    kk_sum = 0;
+    }
+
+    vm=vm+vo;
+    if(Nc>=399) {offset=vm/400; Nc=0; vm=0;}
+    
+    vrms=vrms+v*v;
+
+    N=N+1; //numero de amostras totais
+    Nc=Nc+1; //numero no ciclo
+
+       
+    SOGI_PLL_Update(v);
+
+    
+    
+    printLL1 = pll_freq;
+    printLL3 = pll_v_rms*66.67;
+    
+    
+    kk=kk+1; //numero de amostras entre zeros
+    v_ant = v; 
